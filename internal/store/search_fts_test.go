@@ -3,6 +3,7 @@
 package store
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -134,4 +135,30 @@ func TestFTSInjectionPrevented(t *testing.T) {
 			t.Errorf("expected m1 for 'hello world', got %v", ms)
 		}
 	})
+}
+
+func TestOpenRetainsFTSEnabledOnReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wacli.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !db.HasFTS() {
+		t.Fatalf("expected HasFTS=true on initial open")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open reopen: %v", err)
+	}
+	defer reopened.Close()
+
+	if !reopened.HasFTS() {
+		t.Fatalf("expected HasFTS=true after reopen")
+	}
 }

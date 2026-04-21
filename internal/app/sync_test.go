@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func TestSyncStoresLiveAndHistoryMessages(t *testing.T) {
@@ -235,6 +237,133 @@ func TestSyncStoresDisplayText(t *testing.T) {
 	}
 }
 
+func TestSyncStoresStructuredFallbackDisplayText(t *testing.T) {
+	a := newTestApp(t)
+	f := newFakeWA()
+	a.wa = f
+
+	chat := types.JID{User: "123", Server: types.DefaultUserServer}
+	f.contacts[chat.ToNonAD()] = types.ContactInfo{
+		Found:     true,
+		FullName:  "Alice",
+		FirstName: "Alice",
+		PushName:  "Alice",
+	}
+
+	msg := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:     chat,
+				Sender:   chat,
+				IsFromMe: false,
+				IsGroup:  false,
+			},
+			ID:        "m-request-phone",
+			Timestamp: time.Date(2024, 1, 4, 0, 0, 0, 0, time.UTC),
+			PushName:  "Alice",
+		},
+		Message: &waProto.Message{
+			RequestPhoneNumberMessage: &waProto.RequestPhoneNumberMessage{},
+		},
+	}
+
+	f.connectEvents = []interface{}{msg}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	res, err := a.Sync(ctx, SyncOptions{
+		Mode:    SyncModeFollow,
+		AllowQR: false,
+	})
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if res.MessagesStored != 1 {
+		t.Fatalf("expected 1 MessagesStored, got %d", res.MessagesStored)
+	}
+
+	stored, err := a.db.GetMessage(chat.String(), "m-request-phone")
+	if err != nil {
+		t.Fatalf("GetMessage structured: %v", err)
+	}
+	if stored.DisplayText != "Requested phone number" {
+		t.Fatalf("expected structured display text, got %q", stored.DisplayText)
+	}
+	if stored.MessageKind != "request_phone_number" {
+		t.Fatalf("expected structured message kind, got %q", stored.MessageKind)
+	}
+}
+
+func TestSyncStoresTemplateDisplayText(t *testing.T) {
+	a := newTestApp(t)
+	f := newFakeWA()
+	a.wa = f
+
+	chat := types.JID{User: "123", Server: types.DefaultUserServer}
+	f.contacts[chat.ToNonAD()] = types.ContactInfo{
+		Found:     true,
+		FullName:  "Alice",
+		FirstName: "Alice",
+		PushName:  "Alice",
+	}
+
+	msg := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:     chat,
+				Sender:   chat,
+				IsFromMe: false,
+				IsGroup:  false,
+			},
+			ID:        "m-template",
+			Timestamp: time.Date(2024, 1, 5, 0, 0, 0, 0, time.UTC),
+			PushName:  "Alice",
+		},
+		Message: &waProto.Message{
+			TemplateMessage: &waProto.TemplateMessage{
+				Format: &waProto.TemplateMessage_HydratedFourRowTemplate_{
+					HydratedFourRowTemplate: &waProto.TemplateMessage_HydratedFourRowTemplate{
+						Title:               &waProto.TemplateMessage_HydratedFourRowTemplate_HydratedTitleText{HydratedTitleText: "Verification"},
+						HydratedContentText: proto.String("Use code 1234"),
+					},
+				},
+			},
+		},
+	}
+
+	f.connectEvents = []interface{}{msg}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	res, err := a.Sync(ctx, SyncOptions{
+		Mode:    SyncModeFollow,
+		AllowQR: false,
+	})
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if res.MessagesStored != 1 {
+		t.Fatalf("expected 1 MessagesStored, got %d", res.MessagesStored)
+	}
+
+	stored, err := a.db.GetMessage(chat.String(), "m-template")
+	if err != nil {
+		t.Fatalf("GetMessage template: %v", err)
+	}
+	if stored.DisplayText != "Verification: Use code 1234" {
+		t.Fatalf("expected template display text, got %q", stored.DisplayText)
+	}
+	if stored.MessageKind != "template" {
+		t.Fatalf("expected template message kind, got %q", stored.MessageKind)
+	}
+}
+
 func TestSyncOnceIdleExit(t *testing.T) {
 	a := newTestApp(t)
 	f := newFakeWA()
@@ -255,4 +384,86 @@ func TestSyncOnceIdleExit(t *testing.T) {
 	if time.Since(start) > 1500*time.Millisecond {
 		t.Fatalf("expected to exit quickly on idle, took %s", time.Since(start))
 	}
+}
+
+func TestSyncStoresOpaqueMessageKindAndSummary(t *testing.T) {
+	a := newTestApp(t)
+	f := newFakeWA()
+	a.wa = f
+
+	chat := types.JID{User: "123", Server: types.DefaultUserServer}
+	msg := &waProto.Message{}
+	fieldName, ok := setOpaqueTestField(msg)
+	if !ok {
+		t.Skip("no suitable opaque message field present in current proto")
+	}
+
+	f.connectEvents = []interface{}{
+		&events.Message{
+			Info: types.MessageInfo{
+				MessageSource: types.MessageSource{
+					Chat:     chat,
+					Sender:   chat,
+					IsFromMe: false,
+					IsGroup:  false,
+				},
+				ID:        "m-opaque",
+				Timestamp: time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
+				PushName:  "Alice",
+			},
+			Message: msg,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	if _, err := a.Sync(ctx, SyncOptions{Mode: SyncModeFollow, AllowQR: false}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	stored, err := a.db.GetMessage(chat.String(), "m-opaque")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if stored.MessageKind != fieldName {
+		t.Fatalf("expected MessageKind %q, got %q", fieldName, stored.MessageKind)
+	}
+	if stored.RawSummary == "" || !strings.Contains(stored.RawSummary, fieldName) {
+		t.Fatalf("expected RawSummary to mention %q, got %q", fieldName, stored.RawSummary)
+	}
+	if stored.DisplayText != "Unsupported message ("+fieldName+")" {
+		t.Fatalf("unexpected DisplayText: %q", stored.DisplayText)
+	}
+}
+
+func setOpaqueTestField(msg *waProto.Message) (string, bool) {
+	for _, fieldName := range []string{
+		"protocol_message",
+		"poll_creation_message",
+		"interactive_message",
+		"live_location_message",
+	} {
+		if setEmptyMessageField(msg, fieldName) {
+			return fieldName, true
+		}
+	}
+	return "", false
+}
+
+func setEmptyMessageField(msg *waProto.Message, fieldName string) bool {
+	if msg == nil {
+		return false
+	}
+
+	mr := msg.ProtoReflect()
+	fd := mr.Descriptor().Fields().ByName(protoreflect.Name(fieldName))
+	if fd == nil || fd.Kind() != protoreflect.MessageKind {
+		return false
+	}
+
+	mr.Set(fd, mr.NewField(fd))
+	return true
 }

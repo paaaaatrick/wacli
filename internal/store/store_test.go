@@ -128,6 +128,41 @@ func TestMessageUpsertIdempotentAndContext(t *testing.T) {
 	}
 }
 
+func TestMessageKindAndRawSummaryRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	chat := "123@s.whatsapp.net"
+	if err := db.UpsertChat(chat, "dm", "Alice", time.Now()); err != nil {
+		t.Fatalf("UpsertChat: %v", err)
+	}
+
+	if err := db.UpsertMessage(UpsertMessageParams{
+		ChatJID:     chat,
+		ChatName:    "Alice",
+		MsgID:       "opaque-1",
+		SenderJID:   chat,
+		SenderName:  "Alice",
+		Timestamp:   time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC),
+		FromMe:      false,
+		DisplayText: "Unsupported message (protocol_message)",
+		MessageKind: "protocol_message",
+		RawSummary:  "fields=protocol_message",
+	}); err != nil {
+		t.Fatalf("UpsertMessage: %v", err)
+	}
+
+	msg, err := db.GetMessage(chat, "opaque-1")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if msg.MessageKind != "protocol_message" {
+		t.Fatalf("expected MessageKind protocol_message, got %q", msg.MessageKind)
+	}
+	if msg.RawSummary != "fields=protocol_message" {
+		t.Fatalf("expected RawSummary to round-trip, got %q", msg.RawSummary)
+	}
+}
+
 func TestMediaDownloadInfoAndMarkDownloaded(t *testing.T) {
 	db := openTestDB(t)
 

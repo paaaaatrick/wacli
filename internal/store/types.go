@@ -55,6 +55,8 @@ type Message struct {
 	Text        string
 	DisplayText string
 	MediaType   string
+	MessageKind string
+	RawSummary  string
 	Snippet     string
 }
 

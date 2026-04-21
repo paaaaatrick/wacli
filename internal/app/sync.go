@@ -344,6 +344,8 @@ func (a *App) storeParsedMessage(ctx context.Context, pm wa.ParsedMessage) error
 		Text:          pm.Text,
 		DisplayText:   displayText,
 		MediaType:     mediaType,
+		MessageKind:   pm.MessageKind,
+		RawSummary:    pm.RawSummary,
 		MediaCaption:  caption,
 		Filename:      filename,
 		MimeType:      mimeType,
@@ -395,13 +397,7 @@ func (a *App) buildDisplayText(ctx context.Context, pm wa.ParsedMessage) string 
 }
 
 func baseDisplayText(pm wa.ParsedMessage) string {
-	if pm.Media != nil {
-		return "Sent " + mediaLabel(pm.Media.Type)
-	}
-	if text := strings.TrimSpace(pm.Text); text != "" {
-		return text
-	}
-	return ""
+	return wa.DisplayText(pm)
 }
 
 func (a *App) lookupMessageDisplayText(chatJID, msgID string) string {
@@ -412,10 +408,13 @@ func (a *App) lookupMessageDisplayText(chatJID, msgID string) string {
 	if err != nil {
 		return ""
 	}
-	if text := strings.TrimSpace(msg.DisplayText); text != "" {
+	if text := strings.TrimSpace(msg.DisplayText); text != "" && text != "(message)" {
 		return text
 	}
 	if text := strings.TrimSpace(msg.Text); text != "" {
+		return text
+	}
+	if text := wa.KindDisplayText(msg.MessageKind); text != "" {
 		return text
 	}
 	if strings.TrimSpace(msg.MediaType) != "" {
