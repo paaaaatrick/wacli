@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func TestSyncStoresLiveAndHistoryMessages(t *testing.T) {
@@ -392,10 +390,11 @@ func TestSyncStoresOpaqueMessageKindAndSummary(t *testing.T) {
 	a.wa = f
 
 	chat := types.JID{User: "123", Server: types.DefaultUserServer}
-	msg := &waProto.Message{}
-	fieldName, ok := setOpaqueTestField(msg)
-	if !ok {
-		t.Skip("no suitable opaque message field present in current proto")
+	const fieldName = "highlyStructuredMessage"
+	msg := &waProto.Message{
+		HighlyStructuredMessage: &waProto.HighlyStructuredMessage{
+			Params: []string{"synthetic private payload"},
+		},
 	}
 
 	f.connectEvents = []interface{}{
@@ -431,39 +430,10 @@ func TestSyncStoresOpaqueMessageKindAndSummary(t *testing.T) {
 	if stored.MessageKind != fieldName {
 		t.Fatalf("expected MessageKind %q, got %q", fieldName, stored.MessageKind)
 	}
-	if stored.RawSummary == "" || !strings.Contains(stored.RawSummary, fieldName) {
-		t.Fatalf("expected RawSummary to mention %q, got %q", fieldName, stored.RawSummary)
+	if stored.RawSummary != "fields="+fieldName {
+		t.Fatalf("expected field-only RawSummary, got %q", stored.RawSummary)
 	}
 	if stored.DisplayText != "Unsupported message ("+fieldName+")" {
 		t.Fatalf("unexpected DisplayText: %q", stored.DisplayText)
 	}
-}
-
-func setOpaqueTestField(msg *waProto.Message) (string, bool) {
-	for _, fieldName := range []string{
-		"protocol_message",
-		"poll_creation_message",
-		"interactive_message",
-		"live_location_message",
-	} {
-		if setEmptyMessageField(msg, fieldName) {
-			return fieldName, true
-		}
-	}
-	return "", false
-}
-
-func setEmptyMessageField(msg *waProto.Message, fieldName string) bool {
-	if msg == nil {
-		return false
-	}
-
-	mr := msg.ProtoReflect()
-	fd := mr.Descriptor().Fields().ByName(protoreflect.Name(fieldName))
-	if fd == nil || fd.Kind() != protoreflect.MessageKind {
-		return false
-	}
-
-	mr.Set(fd, mr.NewField(fd))
-	return true
 }

@@ -8,7 +8,6 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func TestParseHistoryMessageTextAndSender(t *testing.T) {
@@ -146,10 +145,7 @@ func TestParseLiveMessageLocationClassifiedAsKnownKind(t *testing.T) {
 	chat, _ := types.ParseJID("123@s.whatsapp.net")
 	sender, _ := types.ParseJID("sender@s.whatsapp.net")
 
-	msg := &waProto.Message{}
-	if !setEmptyMessageFieldByName(msg, "location_message") {
-		t.Skip("location_message not present in current proto")
-	}
+	msg := &waProto.Message{LocationMessage: &waProto.LocationMessage{}}
 
 	ev := &events.Message{
 		Info: types.MessageInfo{
@@ -181,15 +177,11 @@ func TestParseLiveMessageUnknownKindPreservesRawSummary(t *testing.T) {
 	chat, _ := types.ParseJID("123@s.whatsapp.net")
 	sender, _ := types.ParseJID("sender@s.whatsapp.net")
 
-	msg := &waProto.Message{}
-	fieldName, ok := setFirstAvailableMessageField(msg,
-		"protocol_message",
-		"poll_creation_message",
-		"interactive_message",
-		"live_location_message",
-	)
-	if !ok {
-		t.Skip("no suitable opaque message field present in current proto")
+	const fieldName = "highlyStructuredMessage"
+	msg := &waProto.Message{
+		HighlyStructuredMessage: &waProto.HighlyStructuredMessage{
+			Params: []string{"synthetic private payload"},
+		},
 	}
 
 	ev := &events.Message{
@@ -210,8 +202,8 @@ func TestParseLiveMessageUnknownKindPreservesRawSummary(t *testing.T) {
 	if pm.MessageKind != fieldName {
 		t.Fatalf("expected MessageKind %q, got %q", fieldName, pm.MessageKind)
 	}
-	if pm.RawSummary == "" {
-		t.Fatalf("expected RawSummary for opaque message")
+	if pm.RawSummary != "fields="+fieldName {
+		t.Fatalf("expected field-only RawSummary, got %q", pm.RawSummary)
 	}
 	if got := KindDisplayText(pm.MessageKind); got == "" {
 		t.Fatalf("expected fallback display text for opaque kind %q", pm.MessageKind)
@@ -479,28 +471,4 @@ func TestParseLiveMessageReplyToStructuredQuotedMessage(t *testing.T) {
 	if pm.ReplyToDisplay != "Verification: Use code 1234" {
 		t.Fatalf("expected quoted structured display text, got %q", pm.ReplyToDisplay)
 	}
-}
-
-func setFirstAvailableMessageField(msg *waProto.Message, candidates ...string) (string, bool) {
-	for _, candidate := range candidates {
-		if setEmptyMessageFieldByName(msg, candidate) {
-			return candidate, true
-		}
-	}
-	return "", false
-}
-
-func setEmptyMessageFieldByName(msg *waProto.Message, fieldName string) bool {
-	if msg == nil {
-		return false
-	}
-
-	mr := msg.ProtoReflect()
-	fd := mr.Descriptor().Fields().ByName(protoreflect.Name(fieldName))
-	if fd == nil || fd.Kind() != protoreflect.MessageKind {
-		return false
-	}
-
-	mr.Set(fd, mr.NewField(fd))
-	return true
 }
