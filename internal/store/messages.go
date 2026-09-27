@@ -17,6 +17,8 @@ type UpsertMessageParams struct {
 	Text          string
 	DisplayText   string
 	MediaType     string
+	MessageKind   string
+	RawSummary    string
 	MediaCaption  string
 	Filename      string
 	MimeType      string
@@ -31,9 +33,9 @@ func (d *DB) UpsertMessage(p UpsertMessageParams) error {
 	_, err := d.sql.Exec(`
 		INSERT INTO messages(
 			chat_jid, chat_name, msg_id, sender_jid, sender_name, ts, from_me, text, display_text,
-			media_type, media_caption, filename, mime_type, direct_path,
+			media_type, message_kind, raw_summary, media_caption, filename, mime_type, direct_path,
 			media_key, file_sha256, file_enc_sha256, file_length
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_jid, msg_id) DO UPDATE SET
 			chat_name=COALESCE(NULLIF(excluded.chat_name,''), messages.chat_name),
 			sender_jid=excluded.sender_jid,
@@ -43,6 +45,8 @@ func (d *DB) UpsertMessage(p UpsertMessageParams) error {
 			text=excluded.text,
 			display_text=CASE WHEN excluded.display_text IS NOT NULL AND excluded.display_text != '' THEN excluded.display_text ELSE messages.display_text END,
 			media_type=excluded.media_type,
+			message_kind=COALESCE(NULLIF(excluded.message_kind,''), messages.message_kind),
+			raw_summary=COALESCE(NULLIF(excluded.raw_summary,''), messages.raw_summary),
 			media_caption=excluded.media_caption,
 			filename=COALESCE(NULLIF(excluded.filename,''), messages.filename),
 			mime_type=COALESCE(NULLIF(excluded.mime_type,''), messages.mime_type),
@@ -52,7 +56,7 @@ func (d *DB) UpsertMessage(p UpsertMessageParams) error {
 			file_enc_sha256=CASE WHEN excluded.file_enc_sha256 IS NOT NULL AND length(excluded.file_enc_sha256)>0 THEN excluded.file_enc_sha256 ELSE messages.file_enc_sha256 END,
 			file_length=CASE WHEN excluded.file_length>0 THEN excluded.file_length ELSE messages.file_length END
 	`, p.ChatJID, nullIfEmpty(p.ChatName), p.MsgID, nullIfEmpty(p.SenderJID), nullIfEmpty(p.SenderName), unix(p.Timestamp), boolToInt(p.FromMe), nullIfEmpty(p.Text), nullIfEmpty(p.DisplayText),
-		nullIfEmpty(p.MediaType), nullIfEmpty(p.MediaCaption), nullIfEmpty(p.Filename), nullIfEmpty(p.MimeType), nullIfEmpty(p.DirectPath),
+		nullIfEmpty(p.MediaType), nullIfEmpty(p.MessageKind), nullIfEmpty(p.RawSummary), nullIfEmpty(p.MediaCaption), nullIfEmpty(p.Filename), nullIfEmpty(p.MimeType), nullIfEmpty(p.DirectPath),
 		p.MediaKey, p.FileSHA256, p.FileEncSHA256, int64(p.FileLength),
 	)
 	return err
@@ -70,7 +74,9 @@ func (d *DB) ListMessages(p ListMessagesParams) ([]Message, error) {
 		p.Limit = 50
 	}
 	query := `
-		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me, COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''), ''
+		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me,
+		       COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''),
+		       COALESCE(m.message_kind,''), COALESCE(m.raw_summary,''), ''
 		FROM messages m
 		LEFT JOIN chats c ON c.jid = m.chat_jid
 		WHERE 1=1`
@@ -94,7 +100,9 @@ func (d *DB) ListMessages(p ListMessagesParams) ([]Message, error) {
 
 func (d *DB) GetMessage(chatJID, msgID string) (Message, error) {
 	row := d.sql.QueryRow(`
-		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me, COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''), ''
+		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me,
+		       COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''),
+		       COALESCE(m.message_kind,''), COALESCE(m.raw_summary,''), ''
 		FROM messages m
 		LEFT JOIN chats c ON c.jid = m.chat_jid
 		WHERE m.chat_jid = ? AND m.msg_id = ?
@@ -102,7 +110,7 @@ func (d *DB) GetMessage(chatJID, msgID string) (Message, error) {
 	var m Message
 	var ts int64
 	var fromMe int
-	if err := row.Scan(&m.ChatJID, &m.ChatName, &m.MsgID, &m.SenderJID, &ts, &fromMe, &m.Text, &m.DisplayText, &m.MediaType, &m.Snippet); err != nil {
+	if err := row.Scan(&m.ChatJID, &m.ChatName, &m.MsgID, &m.SenderJID, &ts, &fromMe, &m.Text, &m.DisplayText, &m.MediaType, &m.MessageKind, &m.RawSummary, &m.Snippet); err != nil {
 		return Message{}, err
 	}
 	m.Timestamp = fromUnix(ts)
@@ -155,7 +163,9 @@ func (d *DB) MessageContext(chatJID, msgID string, before, after int) ([]Message
 	}
 
 	beforeRows, err := d.scanMessages(`
-		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me, COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''), ''
+		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me,
+		       COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''),
+		       COALESCE(m.message_kind,''), COALESCE(m.raw_summary,''), ''
 		FROM messages m
 		LEFT JOIN chats c ON c.jid = m.chat_jid
 		WHERE m.chat_jid = ? AND m.ts < ?
@@ -167,7 +177,9 @@ func (d *DB) MessageContext(chatJID, msgID string, before, after int) ([]Message
 	}
 
 	afterRows, err := d.scanMessages(`
-		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me, COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''), ''
+		SELECT m.chat_jid, COALESCE(c.name,''), m.msg_id, COALESCE(m.sender_jid,''), m.ts, m.from_me,
+		       COALESCE(m.text,''), COALESCE(m.display_text,''), COALESCE(m.media_type,''),
+		       COALESCE(m.message_kind,''), COALESCE(m.raw_summary,''), ''
 		FROM messages m
 		LEFT JOIN chats c ON c.jid = m.chat_jid
 		WHERE m.chat_jid = ? AND m.ts > ?
@@ -202,7 +214,7 @@ func (d *DB) scanMessages(query string, args ...interface{}) ([]Message, error) 
 		var m Message
 		var ts int64
 		var fromMe int
-		if err := rows.Scan(&m.ChatJID, &m.ChatName, &m.MsgID, &m.SenderJID, &ts, &fromMe, &m.Text, &m.DisplayText, &m.MediaType, &m.Snippet); err != nil {
+		if err := rows.Scan(&m.ChatJID, &m.ChatName, &m.MsgID, &m.SenderJID, &ts, &fromMe, &m.Text, &m.DisplayText, &m.MediaType, &m.MessageKind, &m.RawSummary, &m.Snippet); err != nil {
 			return nil, err
 		}
 		m.Timestamp = fromUnix(ts)

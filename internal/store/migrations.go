@@ -18,6 +18,8 @@ var schemaMigrations = []migration{
 	{version: 1, name: "core schema", up: migrateCoreSchema},
 	{version: 2, name: "messages display_text column", up: migrateMessagesDisplayText},
 	{version: 3, name: "messages fts", up: migrateMessagesFTS},
+	{version: 4, name: "messages kind and raw summary", up: migrateMessagesKindAndRawSummary},
+	{version: 5, name: "backfill message kind", up: migrateBackfillMessageKind},
 }
 
 func (d *DB) ensureSchema() error {
@@ -131,6 +133,8 @@ func migrateCoreSchema(d *DB) error {
 			text TEXT,
 			display_text TEXT,
 			media_type TEXT,
+			message_kind TEXT,
+			raw_summary TEXT,
 			media_caption TEXT,
 			filename TEXT,
 			mime_type TEXT,
@@ -247,6 +251,64 @@ func migrateMessagesFTS(d *DB) error {
 	}
 
 	d.ftsEnabled = true
+	return nil
+}
+
+func migrateMessagesKindAndRawSummary(d *DB) error {
+	hasMessageKind, err := d.tableHasColumn("messages", "message_kind")
+	if err != nil {
+		return err
+	}
+	if !hasMessageKind {
+		if _, err := d.sql.Exec(`ALTER TABLE messages ADD COLUMN message_kind TEXT`); err != nil {
+			return fmt.Errorf("add message_kind column: %w", err)
+		}
+	}
+
+	hasRawSummary, err := d.tableHasColumn("messages", "raw_summary")
+	if err != nil {
+		return err
+	}
+	if !hasRawSummary {
+		if _, err := d.sql.Exec(`ALTER TABLE messages ADD COLUMN raw_summary TEXT`); err != nil {
+			return fmt.Errorf("add raw_summary column: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func migrateBackfillMessageKind(d *DB) error {
+	if _, err := d.sql.Exec(`
+		UPDATE messages
+		SET message_kind = CASE
+			WHEN COALESCE(NULLIF(message_kind, ''), '') != '' THEN message_kind
+			WHEN COALESCE(NULLIF(media_type, ''), '') != '' THEN media_type
+			WHEN COALESCE(NULLIF(text, ''), '') != '' THEN 'text'
+			WHEN COALESCE(NULLIF(display_text, ''), '') = 'Sent location' THEN 'location'
+			WHEN COALESCE(NULLIF(display_text, ''), '') = 'Sent contact' THEN 'contact'
+			WHEN COALESCE(NULLIF(display_text, ''), '') = 'Sent contacts' THEN 'contacts'
+			WHEN (COALESCE(NULLIF(text, ''), '') = '')
+			     AND (COALESCE(NULLIF(display_text, ''), '') = '(message)' OR COALESCE(NULLIF(display_text, ''), '') = '')
+			     AND (COALESCE(NULLIF(media_caption, ''), '') = '')
+			     AND (COALESCE(NULLIF(filename, ''), '') = '')
+			     AND (COALESCE(NULLIF(mime_type, ''), '') = '') THEN 'legacy_unknown'
+			ELSE message_kind
+		END
+		WHERE COALESCE(NULLIF(message_kind, ''), '') = ''
+	`); err != nil {
+		return fmt.Errorf("backfill message_kind: %w", err)
+	}
+
+	if _, err := d.sql.Exec(`
+		UPDATE messages
+		SET raw_summary = 'legacy_placeholder'
+		WHERE message_kind = 'legacy_unknown'
+		  AND COALESCE(NULLIF(raw_summary, ''), '') = ''
+	`); err != nil {
+		return fmt.Errorf("backfill raw_summary: %w", err)
+	}
+
 	return nil
 }
 
